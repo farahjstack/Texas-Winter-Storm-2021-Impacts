@@ -1,0 +1,47 @@
+---
+title: "Texas Winter Storm 2021 Impacts"
+subtitle: "EDS 223: Homework 4"
+author: "Farah Stack"
+date: 2026-11-14
+execute: 
+  eval: true
+format: pdf
+mainfont: Helvetica
+editor_options: 
+  chunk_output_type: console
+---
+
+# Load libraries
+```{r}
+#| message: false
+#| warning: false
+library(terra)
+library(stars)
+library(tmap)
+library(tidyverse)
+library(kableExtra)
+```
+
+# Load data
+```{r}
+tile5_7 <- read_stars("data/VNP46A1/VNP46A1.A2021038.h08v05.001.2021039064328.tif")
+
+tile6_7 <- read_stars("data/VNP46A1/VNP46A1.A2021038.h08v06.001.2021039064329.tif")
+
+tile5_16 <- read_stars("data/VNP46A1/VNP46A1.A2021047.h08v05.001.2021048091106.tif")
+
+tile6_16 <- read_stars("data/VNP46A1/VNP46A1.A2021047.h08v06.001.2021048091105.tif")
+
+roads <- st_read("data/gis_osm_roads_free_1.gpkg")
+  
+homes <- st_read("data/gis_osm_buildings_a_free_1.gpkg")
+```
+
+
+```{r}
+# Use st_mosaic to create blackout mask
+
+feb7_lights <- st_mosaic(tile5_7,tile6_7)
+
+feb16_lights <- st_mosaic(tile5_16, tile6_16)
+```
