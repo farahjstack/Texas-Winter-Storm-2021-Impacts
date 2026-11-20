@@ -15,33 +15,162 @@ editor_options:
 ```{r}
 #| message: false
 #| warning: false
-library(terra)
-library(stars)
-library(tmap)
+library(terra) # raster handling
+library(stars) # raster handling
+library(tmap) # map making
 library(tidyverse)
 library(kableExtra)
+library(gt) # table formatting
 ```
 
 # Load data
 ```{r}
+# Load data for Feb 7, 2021 tiles (pre-storm)
 tile5_7 <- read_stars("data/VNP46A1/VNP46A1.A2021038.h08v05.001.2021039064328.tif")
-
 tile6_7 <- read_stars("data/VNP46A1/VNP46A1.A2021038.h08v06.001.2021039064329.tif")
 
+# Load data for Feb 16, 2021 tiles (post-storm)
 tile5_16 <- read_stars("data/VNP46A1/VNP46A1.A2021047.h08v05.001.2021048091106.tif")
-
 tile6_16 <- read_stars("data/VNP46A1/VNP46A1.A2021047.h08v06.001.2021048091105.tif")
 
-roads <- st_read("data/gis_osm_roads_free_1.gpkg")
-  
-homes <- st_read("data/gis_osm_buildings_a_free_1.gpkg")
+# Load data for Texas roads
+highway_query <- "SELECT * FROM gis_osm_roads_free_1 WHERE fclass='motorway'"
+highway <- st_read("data/gis_osm_roads_free_1.gpkg", query = highway_query)
+
+# Load data for Houston area homes
+homes_query <- "SELECT *
+FROM gis_osm_buildings_a_free_1
+WHERE (type IS NULL AND name IS NULL)
+OR type in ('residential', 'apartments', 'house', 'static_caravan', 'detached')"
+homes <- st_read("data/gis_osm_buildings_a_free_1.gpkg", query = homes_query)
 ```
+
+# Create a raster object for each day (Feb 7 and Feb 16)
+```{r}
+# Combine Feb 7, 2021 tiles
+pre_storm <- st_mosaic(tile5_7,tile6_7)
+
+# Combine Feb 16, 2021 tiles
+post_storm <- st_mosaic(tile5_16, tile6_16)
+```
+
+# Check Coordinate Reference Systems
+```{r}
+# Check that pre storm and blackout raster CRSs match
+if(st_crs(pre_storm) == st_crs(post_storm)) {
+  print(paste('CRS match! CRS is:' , st_crs(pre_storm)))
+}else{
+  warning('CRS do not match')
+  print(paste('pre_storm CRS is', st_crs(pre_storm)))
+  print(paste('blackout CRS is', st_crs(post_storm)))
+}
+```
+
+```{r}
+# Check that homes and highway data vector CRSs match
+if(st_crs(homes) == st_crs(highway)) {
+  print(paste('CRS match! CRS is:' , st_crs(homes)))
+}else{
+  warning('CRS do not match')
+  print(paste('Roads CRS is', st_crs(homes)))
+  print(paste('Homes CRS is', st_crs(highway)))
+}
+```
+
+_The light data, houses data, and roads data all use the EPSG 4326 coordinate reference system._
+
+## Visualize Blackout
+To visualize the blackout...
 
 
 ```{r}
-# Use st_mosaic to create blackout mask
+# Find change in night lights intensity caused by storm
+difference_blackout <- post_storm - pre_storm
 
-feb7_lights <- st_mosaic(tile5_7,tile6_7)
+blackout <- difference_blackout < -200
 
-feb16_lights <- st_mosaic(tile5_16, tile6_16)
+blackout[!blackout] <- NA
+
+# Vectorize the blackout mask
+blackout_mask <- st_as_sf(blackout) |> 
+  st_make_valid()
+
+# Define Houston area (give coordinate points as a vector)
+houston_area <- st_bbox(c(xmin= -96.5, ymin = 29, xmax = -94.5, ymax = 30.5),
+crs = st_crs(blackout_mask)) # plot with same CRS 
+
+#Crop blackout raster to Houston area
+blackout_crop <- st_crop(blackout_mask, houston_area)
+
+#Re-project the blackout raster to EPSG 3083
+new_blackout <- st_transform(blackout_crop, crs=st_crs(3083))
+```
+
+# Exclude highways from the cropped blackout mask
+```{r}
+# Transform highway CRS to new_blackout
+highway <- st_transform(highway, crs=st_crs(new_blackout))
+```
+
+```{r}
+# Check if CRS match
+if(st_crs(new_blackout) == st_crs(highway)) {
+  print(paste('CRS match! CRS is:' , st_crs(new_blackout)$epsg)) #use $ to subset epsg from st_crs output
+}else{
+  warning('CRS do not match')
+  print(paste('Blackout CRS is', st_crs(new_blackout)))
+  print(paste('Highway CRS is', st_crs(highway)))
+}
+```
+
+```{r}
+# Identify areas within 200m of all highways
+highways_200m <- st_buffer(highway, dist = 200)
+
+highways_200m_buffer <- st_union(highways_200m) # connects all overlapping buffers
+
+# Find areas that experienced blackouts that are further than 200m
+blackout_without_highways <- st_difference(new_blackout, highways_200m_buffer) # keep all blackouts that don't overlap with the buffer
+```
+
+# Identify the number of homes likely impacted by blackouts
+```{r}
+# Transform homes CRS to blackout without highways
+homes <- st_transform(homes, crs=st_crs(blackout_without_highways))
+```
+```{r}
+# Check if CRS match
+if(st_crs(homes) == st_crs(blackout_without_highways)) {
+  print(paste('CRS match! CRS is:' , st_crs(blackout_without_highways)$epsg)) #use $ to subset epsg from st_crs output
+}else{
+  warning('CRS do not match')
+  print(paste('Homes CRS is', st_crs(homes)))
+  print(paste('Blackout without highways is', st_crs(blackout_without_highways)))
+}
+```
+
+```{r}
+#Crop homes to blackout area
+homes_blackout_crop <- st_crop(homes, blackout_without_highways)
+```
+
+```{r}
+# Only keep homes that overlap with areas that experienced blackouts
+homes_blackout <- homes_blackout_crop |> 
+  st_filter(y = blackout_without_highways, .predicate = st_intersects) # subset homes that intersect with blackout highways
+
+plot(homes_blackout)
+
+n_homes <- nrow(homes_blackout) #Approximately 157,408 homes were affected by the February 2021 blackout
+```
+
+```{r}
+# Map of Houston-area homes that lost power
+tm_shape(homes_blackout) +
+  tm_polygons(fill = "firebrick", col = "firebrick", lwd = 0.1) +
+  tm_graticules(lwd = 0.25, alpha = 0.5, labels.size = 0.4) +
+  tm_scalebar(position = tm_pos_in("left", "bottom")) +
+  tm_compass(position = tm_pos_in("right", "top")) +
+  tm_title("Houston Homes Without Power, Feb 16, 2021", fontface = "bold")
+
 ```
